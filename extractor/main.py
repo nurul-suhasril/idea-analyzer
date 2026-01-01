@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
@@ -19,6 +19,9 @@ import redis
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
+
+# Import authentication
+from auth import verify_api_key, is_auth_enabled
 
 # Import extractors
 from extractors.youtube import extract_youtube
@@ -149,9 +152,13 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "service": "idea-analyzer-extractor",
+        "auth_enabled": is_auth_enabled()
+    }
 
-@app.post("/extract", response_model=ExtractionResponse)
+@app.post("/extract", response_model=ExtractionResponse, dependencies=[Depends(verify_api_key)])
 async def create_extraction(request: ExtractionRequest, background_tasks: BackgroundTasks):
     """Create a new extraction job"""
     
@@ -184,7 +191,7 @@ async def create_extraction(request: ExtractionRequest, background_tasks: Backgr
         message=f"Extraction started for {source_type} content"
     )
 
-@app.post("/extract/file", response_model=ExtractionResponse)
+@app.post("/extract/file", response_model=ExtractionResponse, dependencies=[Depends(verify_api_key)])
 async def extract_from_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -262,7 +269,7 @@ async def extract_from_file(
         message=f"File extraction started for {file.filename}"
     )
 
-@app.get("/extraction/{extraction_id}")
+@app.get("/extraction/{extraction_id}", dependencies=[Depends(verify_api_key)])
 async def get_extraction(extraction_id: str):
     """Get extraction by ID"""
     
@@ -281,7 +288,7 @@ async def get_extraction(extraction_id: str):
         cur.close()
         conn.close()
 
-@app.get("/extractions")
+@app.get("/extractions", dependencies=[Depends(verify_api_key)])
 async def list_extractions(limit: int = 20, status: Optional[str] = None):
     """List recent extractions"""
     

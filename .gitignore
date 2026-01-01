@@ -1,5 +1,6 @@
 # Environment and secrets
 .env
+.env.vps
 *.env.local
 
 # Python

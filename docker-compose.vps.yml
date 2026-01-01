@@ -1,0 +1,160 @@
+version: '3.8'
+
+services:
+  # Database Layer
+  postgres:
+    image: postgres:15-alpine
+    container_name: nexus-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-nexus}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:-idea_analyzer}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./supabase/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    networks:
+      - data-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-nexus}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: nexus-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - data-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # API Layer
+  postgrest:
+    image: postgrest/postgrest:latest
+    container_name: nexus-postgrest
+    restart: unless-stopped
+    environment:
+      PGRST_DB_URI: postgres://${DB_USER:-nexus}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-idea_analyzer}
+      PGRST_DB_ANON_ROLE: ${DB_USER:-nexus}
+      PGRST_DB_SCHEMA: public
+      PGRST_OPENAPI_SERVER_PROXY_URI: https://postgrest.${NEXUS_DOMAIN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app-network
+      - data-network
+    labels:
+      # Coolify/Traefik labels for HTTPS
+      - "traefik.enable=true"
+      - "traefik.http.routers.postgrest.rule=Host(`postgrest.${NEXUS_DOMAIN}`)"
+      - "traefik.http.routers.postgrest.entrypoints=websecure"
+      - "traefik.http.routers.postgrest.tls.certresolver=letsencrypt"
+      - "traefik.http.services.postgrest.loadbalancer.server.port=3000"
+      - "traefik.docker.network=public-network"
+
+  # Application Layer
+  extractor:
+    build:
+      context: ./extractor
+      dockerfile: Dockerfile
+    container_name: nexus-extractor
+    restart: unless-stopped
+    environment:
+      # Database
+      DATABASE_URL: postgresql://${DB_USER:-nexus}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-idea_analyzer}
+      
+      # Redis
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      
+      # PostgREST
+      POSTGREST_URL: http://postgrest:3000
+      
+      # API Authentication
+      NEXUS_API_KEY: ${NEXUS_API_KEY}
+      
+      # Whisper Configuration
+      WHISPER_MODEL: ${WHISPER_MODEL:-base}
+      
+      # Service Configuration
+      EXTRACTOR_HOST: 0.0.0.0
+      EXTRACTOR_PORT: 8000
+      
+      # Optional: Reddit API
+      REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
+      REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
+      REDDIT_USER_AGENT: ${REDDIT_USER_AGENT:-IdeaAnalyzer/1.0}
+      
+      # Optional: GitHub API
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # For temporary file processing (audio downloads, etc.)
+      - extractor_temp:/tmp
+    networks:
+      - app-network
+      - data-network
+    labels:
+      # Coolify/Traefik labels for HTTPS
+      - "traefik.enable=true"
+      - "traefik.http.routers.extractor.rule=Host(`api.${NEXUS_DOMAIN}`)"
+      - "traefik.http.routers.extractor.entrypoints=websecure"
+      - "traefik.http.routers.extractor.tls.certresolver=letsencrypt"
+      - "traefik.http.services.extractor.loadbalancer.server.port=8000"
+      - "traefik.docker.network=public-network"
+
+  slack-bot:
+    build:
+      context: ./slack-bot
+      dockerfile: Dockerfile
+    container_name: nexus-slack-bot
+    restart: unless-stopped
+    environment:
+      # Slack Configuration
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN}
+      
+      # Extractor Service URL (internal)
+      EXTRACTOR_URL: http://extractor:8000
+    depends_on:
+      - extractor
+    networks:
+      - app-network
+
+# Volumes
+volumes:
+  postgres_data:
+    name: nexus-postgres-data
+  redis_data:
+    name: nexus-redis-data
+  extractor_temp:
+    name: nexus-extractor-temp
+
+# Networks (3-layer isolation)
+networks:
+  public-network:
+    external: true
+    name: coolify  # Coolify's default public network
+  
+  app-network:
+    name: nexus-app-network
+    driver: bridge
+    internal: false  # Apps can reach internet for API calls
+  
+  data-network:
+    name: nexus-data-network
+    driver: bridge
+    internal: true  # Database layer is fully internal
