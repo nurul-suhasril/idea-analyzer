@@ -1,0 +1,13 @@
+fastapi==0.109.0
+uvicorn==0.27.0
+python-multipart==0.0.6
+httpx==0.26.0
+redis==5.0.1
+psycopg2-binary==2.9.9
+yt-dlp==2024.1.4
+openai-whisper==20231117
+trafilatura==1.6.3
+praw==7.7.1
+PyGithub==2.1.1
+python-dotenv==1.0.0
+celery==5.3.6
