@@ -4,6 +4,9 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import fs from "fs";
+import path from "path";
+import FormData from "form-data";
 
 // Use environment variable for VPS connection, fallback to localhost for dev
 const EXTRACTOR_URL = process.env.EXTRACTOR_URL || 'http://localhost:8000';
@@ -109,6 +112,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {},
+        },
+      },
+      {
+        name: "upload_file",
+        description: "Upload and transcribe a local video or audio file. Supports common formats like MP4, MP3, WAV, M4A, etc.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            file_path: {
+              type: "string",
+              description: "Absolute path to the file (e.g., C:\\Downloads\\video.mp4)",
+            },
+          },
+          required: ["file_path"],
         },
       },
     ],
@@ -228,6 +245,77 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               {
                 type: "text",
                 text: "❌ Idea Analyzer service is not running. Please start it with: .\\start-extractor.bat",
+              },
+            ],
+          };
+        }
+      }
+
+      case "upload_file": {
+        const filePath = args.file_path;
+
+        // Check if file exists
+        if (!fs.existsSync(filePath)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Error: File not found at path: ${filePath}`,
+              },
+            ],
+          };
+        }
+
+        // Get file stats to check size
+        const stats = fs.statSync(filePath);
+        const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
+        const fileName = path.basename(filePath);
+
+        console.error(`[MCP] Uploading file: ${fileName} (${fileSizeMB} MB)`);
+
+        try {
+          // Create form data
+          const formData = new FormData();
+          formData.append("file", fs.createReadStream(filePath));
+
+          // Upload the file
+          const response = await fetch(`${EXTRACTOR_URL}/extract/file`, {
+            method: "POST",
+            headers: {
+              ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
+              ...formData.getHeaders(),
+            },
+            body: formData,
+          });
+
+          if (!response.ok) {
+            if (response.status === 401) {
+              console.error('[MCP] Authentication failed - check NEXUS_API_KEY');
+              throw new Error("Authentication failed. Check your API key.");
+            }
+            if (response.status === 413) {
+              throw new Error("File too large. Maximum size is typically 500MB.");
+            }
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+
+          const data = await response.json();
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `File upload started!\n\nFile: ${fileName}\nSize: ${fileSizeMB} MB\nExtraction ID: ${data.id}\nStatus: ${data.status}\nMessage: ${data.message}\n\nUse get_extraction with ID '${data.id}' to check progress and retrieve the transcript once completed.`,
+              },
+            ],
+          };
+        } catch (error) {
+          console.error(`[MCP] File upload failed:`, error.message);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Error uploading file: ${error.message}`,
               },
             ],
           };
